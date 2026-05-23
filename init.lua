@@ -495,6 +495,7 @@ local function Decompile(bytecode, options)
 					end
 				end
 			end
+		end
 
 		-- read needs to be done in proper order
 		readStringTable()
