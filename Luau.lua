@@ -376,6 +376,29 @@ local Luau = {
 		-- C: constant table index (0..255)
 		{ ["name"] = "IDIVK", ["type"] = "ABC" },
 
+		-- Atom-based userdata field access acceleration
+		{ ["name"] = "GETUDATAKS", ["type"] = "ABC", ["aux"] = true },
+		{ ["name"] = "SETUDATAKS", ["type"] = "ABC", ["aux"] = true },
+		{ ["name"] = "NAMECALLUDATA", ["type"] = "ABC", ["aux"] = true },
+
+		-- NEWCLASSMEMBER: register this method on a class object.
+		-- A: target register of class
+		-- B: reserved
+		-- C: initial value of this member
+		-- AUX: member name constant
+		{ ["name"] = "NEWCLASSMEMBER", ["type"] = "ABC", ["aux"] = true },
+
+		-- CALLFB: call specified function while collecting runtime stats in a feedback slot
+		-- A: function register; B/C match CALL
+		-- AUX: feedback slot id
+		{ ["name"] = "CALLFB", ["type"] = "ABC", ["aux"] = true },
+
+		-- CMPPROTO: check if a register contains a closure with a specified proto id
+		-- A: closure register
+		-- D: jump offset if proto doesn't match
+		-- AUX: proto id
+		{ ["name"] = "CMPPROTO", ["type"] = "AsD", ["aux"] = true },
+
 		-- Enum entry for number of opcodes, not a valid opcode by itself!
 		{ ["name"] = "_COUNT", ["type"] = "none" }
 	},
@@ -383,10 +406,12 @@ local Luau = {
 	BytecodeTag = {
 		-- Bytecode version; runtime supports [MIN, MAX]
 		LBC_VERSION_MIN = 3,
-		LBC_VERSION_MAX = 6,
+		LBC_VERSION_MAX = 11,
+		LBC_VERSION_TARGET = 6,
 		-- Type encoding version
 		LBC_TYPE_VERSION_MIN = 1,
 		LBC_TYPE_VERSION_MAX = 3,
+		LBC_TYPE_VERSION_TARGET = 3,
 		-- Types of constant table entries
 		LBC_CONSTANT_NIL = 0,
 		LBC_CONSTANT_BOOLEAN = 1,
@@ -395,7 +420,10 @@ local Luau = {
 		LBC_CONSTANT_IMPORT = 4,
 		LBC_CONSTANT_TABLE = 5,
 		LBC_CONSTANT_CLOSURE = 6,
-		LBC_CONSTANT_VECTOR = 7
+		LBC_CONSTANT_VECTOR = 7,
+		LBC_CONSTANT_TABLE_WITH_CONSTANTS = 8,
+		LBC_CONSTANT_INTEGER = 9,
+		LBC_CONSTANT_CLASS_SHAPE = 10
 	},
 	-- Type table tags
 	BytecodeType = {
@@ -409,6 +437,7 @@ local Luau = {
 		LBC_TYPE_USERDATA = 7,
 		LBC_TYPE_VECTOR = 8,
 		LBC_TYPE_BUFFER = 9,
+		LBC_TYPE_INTEGER = 10,
 
 		LBC_TYPE_ANY = 15,
 
@@ -631,6 +660,8 @@ function Luau:GetBaseTypeString(type, checkOptional)
 		result = "Vector3"
 	elseif tag == LuauBytecodeType.LBC_TYPE_BUFFER then
 		result = "buffer"
+	elseif tag == LuauBytecodeType.LBC_TYPE_INTEGER then
+		result = "integer"
 	elseif tag == LuauBytecodeType.LBC_TYPE_ANY then
 		result = "any"
 	else
@@ -841,6 +872,8 @@ function Luau:GetBuiltinInfo(bfid)
 			return "vector.max"
 		end
 	end
+
+	return "builtin_".. tostring(bfid)
 end
 
 -- finalize

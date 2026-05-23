@@ -64,6 +64,21 @@ function Reader.new(bytecode)
 		end
 		return result
 	end
+	function self:nextVarInt64()
+		local result = 0
+		local shift = 0
+
+		while true do
+			local b = self:nextByte()
+			result += bit32.band(b, 0x7F) * (2 ^ shift)
+			if not bit32.btest(b, 0x80) then
+				break
+			end
+			shift += 7
+		end
+
+		return result
+	end
 
 	function self:nextString(len)
 		len = len or self:nextVarInt()
