@@ -22,9 +22,10 @@ local function LoadFromUrl(x)
 	local BASE_USER = "venatresca4888"
 	local BASE_BRANCH = "main"
 	local BASE_URL = "https://raw.githubusercontent.com/%s/Advanced-Decompiler-V3/%s/%s.lua"
+	local CACHE_BUSTER = "v=bytecode11-20260523"
 
 	local loadSuccess, loadResult = pcall(function()
-		local formattedUrl = string.format(BASE_URL, BASE_USER, BASE_BRANCH, x)
+		local formattedUrl = string.format(BASE_URL, BASE_USER, BASE_BRANCH, x) .. "?" .. CACHE_BUSTER
 		return game:HttpGet(formattedUrl, true)
 	end)
 
@@ -50,6 +51,10 @@ local Implementations = LoadFromUrl("Implementations")
 local Reader = LoadFromUrl("Reader")
 local Strings = LoadFromUrl("Strings")
 local Luau = LoadFromUrl("Luau")
+
+if not Luau or not Luau.BytecodeTag or (Luau.BytecodeTag.LBC_VERSION_MAX or 0) < 11 then
+	error("Advanced Decompiler loaded a stale Luau.lua dependency. Clear executor HTTP cache or use the latest raw files.", 2)
+end
 
 local function LoadFlag(name)
 	local success, result = pcall(function()
