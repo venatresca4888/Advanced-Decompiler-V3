@@ -19,7 +19,7 @@ local DEFAULT_OPTIONS = {
 }
 
 local function LoadFromUrl(x)
-	local BASE_USER = "w-a-e"
+	local BASE_USER = "venatresca4888"
 	local BASE_BRANCH = "main"
 	local BASE_URL = "https://raw.githubusercontent.com/%s/Advanced-Decompiler-V3/%s/%s.lua"
 
@@ -129,6 +129,7 @@ local function Decompile(bytecode, options)
 					constants = {},
 					captures = {}, -- upvalue references
 					innerProtos = {},
+					flags = 0,
 
 					instructionLineInfo = {}
 				}
@@ -296,6 +297,25 @@ local function Decompile(bytecode, options)
 							size = sizeTable,
 							keys = tableKeys
 						}
+					elseif constType == LuauBytecodeTag.LBC_CONSTANT_TABLE_WITH_CONSTANTS then
+						local sizeTable = reader:nextVarInt()
+						local tableEntries = {}
+
+						for i = 1, sizeTable do
+							local keyConstantId = reader:nextVarInt() + 1
+							local valueConstantId = reader:nextInt32()
+
+							table.insert(tableEntries, {
+								key = keyConstantId,
+								value = if valueConstantId >= 0 then valueConstantId + 1 else nil
+							})
+						end
+
+						constValue = {
+							size = sizeTable,
+							keys = tableEntries,
+							hasConstantValues = true
+						}
 					elseif constType == LuauBytecodeTag.LBC_CONSTANT_CLOSURE then
 						local closureId = reader:nextVarInt() + 1
 						constValue = closureId
@@ -306,6 +326,26 @@ local function Decompile(bytecode, options)
 						else
 							constValue = "vector.create(".. x ..", ".. y ..", ".. z ..", ".. w ..")"
 						end
+					elseif constType == LuauBytecodeTag.LBC_CONSTANT_INTEGER then
+						local isNegative = toBoolean(reader:nextByte())
+						local magnitude = reader:nextVarInt64()
+						constValue = if isNegative then -magnitude else magnitude
+					elseif constType == LuauBytecodeTag.LBC_CONSTANT_CLASS_SHAPE then
+						local classNameConstantId = reader:nextVarInt() + 1
+						local numProperties = reader:nextVarInt()
+						local numMethods = reader:nextVarInt()
+						local members = {}
+
+						for i = 1, numProperties + numMethods do
+							table.insert(members, reader:nextVarInt() + 1)
+						end
+
+						constValue = {
+							className = classNameConstantId,
+							numProperties = numProperties,
+							numMethods = numMethods,
+							members = members
+						}
 					elseif constType ~= LuauBytecodeTag.LBC_CONSTANT_NIL then
 						-- this is not supposed to happen. result is likely malformed
 					end
@@ -444,12 +484,22 @@ local function Decompile(bytecode, options)
 					end
 					proto.debugUpvalues = readDebugUpvalues()
 				end
+
+				if bytecodeVersion >= 11 then
+					local feedbackVecSize = reader:nextVarInt()
+					proto.feedbackVecSize = feedbackVecSize
+
+					for i = 1, feedbackVecSize do
+						reader:nextByte() -- slot type
+						reader:nextVarInt() -- pc
+					end
+				end
 			end
 		end
 
 		-- read needs to be done in proper order
 		readStringTable()
-		if bytecodeVersion > 5 then
+		if typeEncodingVersion == LuauBytecodeTag.LBC_TYPE_VERSION_TARGET then
 			readUserdataTypes()
 		end
 		readProtoTable()
@@ -637,6 +687,8 @@ local function Decompile(bytecode, options)
 						registerAction({A, B, C})
 					elseif opCodeName == "GETTABLEKS" or opCodeName == "SETTABLEKS" then
 						registerAction({A, B}, {C, aux})
+					elseif opCodeName == "GETUDATAKS" or opCodeName == "SETUDATAKS" then
+						registerAction({A, B}, {C, bit32.band(aux, 0xFFFF)})
 					elseif opCodeName == "GETTABLEN" or opCodeName == "SETTABLEN" then
 						registerAction({A, B}, {C})
 					elseif opCodeName == "NEWCLOSURE" then
@@ -653,8 +705,12 @@ local function Decompile(bytecode, options)
 						baseProto(proto)
 					elseif opCodeName == "NAMECALL" then -- must be followed by CALL
 						registerAction({A, B}, {C, aux}, not options.ShowTrivialOperations)
+					elseif opCodeName == "NAMECALLUDATA" then -- must be followed by CALL
+						registerAction({A, B}, {C, bit32.band(aux, 0xFFFF)}, not options.ShowTrivialOperations)
 					elseif opCodeName == "CALL" then
 						registerAction({A}, {B, C})
+					elseif opCodeName == "CALLFB" then
+						registerAction({A}, {B, C, aux})
 					elseif opCodeName == "RETURN" then
 						registerAction({A}, {B})
 					elseif opCodeName == "JUMP" or opCodeName == "JUMPBACK" then
@@ -763,9 +819,13 @@ local function Decompile(bytecode, options)
 						registerAction({B}, {A, C, aux}, not options.ShowTrivialOperations)
 					elseif opCodeName == "FASTCALL3" then
 						local sourceArgumentRegister2 = bit32.band(aux, 0xFF)
-						local sourceArgumentRegister3 = bit32.rshift(sourceArgumentRegister2, 8)
+						local sourceArgumentRegister3 = bit32.band(bit32.rshift(aux, 8), 0xFF)
 
 						registerAction({B, sourceArgumentRegister2, sourceArgumentRegister3}, {A, C}, not options.ShowTrivialOperations)
+					elseif opCodeName == "NEWCLASSMEMBER" then
+						registerAction({A, C}, {B, aux})
+					elseif opCodeName == "CMPPROTO" then
+						registerAction({A}, {sD, aux})
 					end
 				end
 			end
@@ -985,6 +1045,9 @@ local function Decompile(bytecode, options)
 						local function formatConstantValue(k)
 							if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
 								return k.value
+							elseif k.type == LuauBytecodeTag.LBC_CONSTANT_CLASS_SHAPE then
+								local className = constants[k.value.className]
+								return "--[[class shape: ".. tostring(className and className.value or "unknown") .."]]"
 							else
 								if type(tonumber(k.value)) == "number" then
 									return tonumber(string.format(`%0.{options.ReaderFloatPrecision}f`, k.value))
@@ -1109,7 +1172,7 @@ local function Decompile(bytecode, options)
 							local indexRegister = usedRegisters[3]
 
 							result ..= formatRegister(tableRegister) .."[".. formatRegister(indexRegister) .."]" .." = ".. formatRegister(sourceRegister)
-						elseif opCodeName == "GETTABLEKS" then
+						elseif opCodeName == "GETTABLEKS" or opCodeName == "GETUDATAKS" then
 							local targetRegister = usedRegisters[1]
 							local tableRegister = usedRegisters[2]
 
@@ -1117,7 +1180,7 @@ local function Decompile(bytecode, options)
 							local key = constants[extraData[2] + 1].value
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(tableRegister) .. formatIndexString(key)
-						elseif opCodeName == "SETTABLEKS" then
+						elseif opCodeName == "SETTABLEKS" or opCodeName == "SETUDATAKS" then
 							local sourceRegister = usedRegisters[1]
 							local tableRegister = usedRegisters[2]
 
@@ -1153,7 +1216,7 @@ local function Decompile(bytecode, options)
 							local nextProto = protoTable[constants[protoIndex].value - 1]
 
 							writeProto(targetRegister, nextProto)
-						elseif opCodeName == "NAMECALL" then -- must be followed by CALL
+						elseif opCodeName == "NAMECALL" or opCodeName == "NAMECALLUDATA" then -- must be followed by CALL
 							--local targetRegister = usedRegisters[1]
 							--local sourceRegister = usedRegisters[2]
 
@@ -1161,7 +1224,7 @@ local function Decompile(bytecode, options)
 							local method = tostring(constants[extraData[2] + 1].value)
 
 							result ..= "-- :".. method
-						elseif opCodeName == "CALL" then
+						elseif opCodeName == "CALL" or opCodeName == "CALLFB" then
 							local baseRegister = usedRegisters[1]
 
 							local numArguments = extraData[1] - 1
@@ -1175,7 +1238,7 @@ local function Decompile(bytecode, options)
 							local precedingAction = actions[i - 1]
 							if precedingAction then
 								local precedingOpCode = precedingAction.opCode
-								if precedingOpCode.name == "NAMECALL" then
+								if precedingOpCode.name == "NAMECALL" or precedingOpCode.name == "NAMECALLUDATA" then
 									local precedingExtraData = precedingAction.extraData
 									namecallMethod = ":".. tostring(constants[precedingExtraData[2] + 1].value)
 
@@ -1512,10 +1575,16 @@ local function Decompile(bytecode, options)
 
 							local tableBody = "{"
 							for i = 1, kSize do
-								local key = kKeys[i]
-								local value = formatConstantValue(constants[key])
-
-								tableBody ..= value
+								local entry = kKeys[i]
+								if value.hasConstantValues then
+									local key = formatConstantValue(constants[entry.key])
+									local entryValue = if entry.value then formatConstantValue(constants[entry.value]) else "nil"
+									tableBody ..= "[".. key .."] = ".. entryValue
+								else
+									local key = entry
+									local value = formatConstantValue(constants[key])
+									tableBody ..= value
+								end
 
 								if i ~= kSize then
 									tableBody ..= ", "
@@ -1795,8 +1864,22 @@ local function Decompile(bytecode, options)
 							local sourceArgumentRegister = usedRegisters[1]
 							local sourceArgumentRegister2 = usedRegisters[2]
 							local sourceArgumentRegister3 = usedRegisters[3]
+							local bfid = extraData[1] -- builtin function id
 
 							result ..= "-- FASTCALL3; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..", ".. formatRegister(sourceArgumentRegister2) ..", ".. formatRegister(sourceArgumentRegister3) ..")"
+						elseif opCodeName == "NEWCLASSMEMBER" then
+							local classRegister = usedRegisters[1]
+							local valueRegister = usedRegisters[2]
+							local memberName = tostring(constants[extraData[2] + 1].value)
+
+							result ..= formatRegister(classRegister) .. formatIndexString(memberName) .." = ".. formatRegister(valueRegister)
+						elseif opCodeName == "CMPPROTO" then
+							local closureRegister = usedRegisters[1]
+							local jumpOffset = extraData[1]
+							local protoId = extraData[2]
+							local endIndex = i + jumpOffset
+
+							result ..= "-- if ".. formatRegister(closureRegister) .." is not proto #".. protoId .." then jump to #".. endIndex
 						end
 					end
 					local function writeFooter()
